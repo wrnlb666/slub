@@ -1,2 +1,2 @@
-# stub
-stub allocator in C
+# slub
+slub allocator in C
