@@ -1,0 +1,5 @@
+.cache/
+target/
+vgcore.*
+compile_commands.json
+test/
