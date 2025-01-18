@@ -8,6 +8,5 @@ TARGET = target/libslub.so
 slub: $(SRC)
 	$(CC) $(CFLAG) -shared -fPIC $< -o $(TARGET) -nostdlib
 
-
-test: test/test.c
-	$(CC) $(CFLAG) $< -o test/$@ -L. -fopenmp -l:target/libslub.so -Wl,-rpath=target/
+malloc: $(SRC)
+	$(CC) $(CFLAG) -D REPLACE_MALLOC -shared -fPIC $< -o $(TARGET) -nostdlib

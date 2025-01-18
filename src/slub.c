@@ -304,7 +304,9 @@ void slub_pg_free(void* ptr, size_t size) {
     /*VALGRIND_FREELIKE_BLOCK(ptr, 0);*/
     munmap(ptr, size);
 }
+#endif  // __linux__
 
+#if defined(REPLACE_MALLOC)
 void* malloc(size_t size) {
     return slub_alloc(size);
 }
@@ -320,4 +322,4 @@ void* realloc(void* ptr, size_t size) {
 void free(void* ptr) {
     slub_free(ptr);
 }
-#endif  // __linux__
+#endif  // REPLACE_MALLOC
