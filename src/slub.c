@@ -79,7 +79,7 @@ void  slub_pg_free(void* ptr, size_t size);
         block->type = CacheSize##sz;                           \
         block->size = 0;                                       \
         block->curr = block->data##sz;                         \
-        for (int i = 0; i < BLOCK_CAP_##sz - 1; i++) {         \
+        for (int i = 0; i < BLOCK_CAP_##sz; i++) {             \
             block->data##sz[i].next = &block->data##sz[i + 1]; \
         }                                                      \
         block->data64[BLOCK_CAP_##sz - 1].next = NULL;         \
@@ -150,22 +150,23 @@ static size_t slub_translate_size(CacheSize size) {
     }
 }
 
-#define DEFINE_SLUB_ALLOC_SIZE(sz)                                                         \
-    static void* slub_alloc_##sz() {                                                       \
-        if (cache.free_block[CacheSize##sz].len == 0) {                                    \
-            cache.free_block[CacheSize##sz]                                                \
-                .block[cache.free_block[CacheSize##sz].len++] = block_init(CacheSize##sz); \
-        }                                                                                  \
-        Block* block = cache.free_block[CacheSize##sz]                                     \
-                           .block[cache.free_block[CacheSize##sz].len - 1];                \
-        Data##sz* res = block->curr;                                                       \
-        block->curr = res->next;                                                           \
-        block->size += 1;                                                                  \
-        res->block = block;                                                                \
-        if (block->size == BLOCK_CAP_##sz) {                                               \
-            cache.free_block[CacheSize##sz].len -= 1;                                      \
-        }                                                                                  \
-        return res->data;                                                                  \
+#define DEFINE_SLUB_ALLOC_SIZE(sz)                                                       \
+    static void* slub_alloc_##sz() {                                                     \
+        if (cache.free_block[CacheSize##sz].len == 0) {                                  \
+            cache.free_block[CacheSize##sz]                                              \
+                .block[cache.free_block[CacheSize##sz].len] = block_init(CacheSize##sz); \
+            cache.free_block[CacheSize##sz].len += 1;                                    \
+        }                                                                                \
+        Block* block = cache.free_block[CacheSize##sz]                                   \
+                           .block[cache.free_block[CacheSize##sz].len - 1];              \
+        Data##sz* res = block->curr;                                                     \
+        block->curr = res->next;                                                         \
+        block->size += 1;                                                                \
+        res->block = block;                                                              \
+        if (block->curr == NULL) {                                                       \
+            cache.free_block[CacheSize##sz].len -= 1;                                    \
+        }                                                                                \
+        return res->data;                                                                \
     }
 
 DEFINE_SLUB_ALLOC_SIZE(64)
@@ -196,24 +197,26 @@ void* slub_alloc(size_t size) {
     return slub_alloc_size_funcs[sz]();
 }
 
-#define DEFINE_SLUB_FREE_SIZE(sz)                                                                                                            \
-    static void slub_free_##sz(void* data, Block* block) {                                                                                   \
-        Data##sz* ptr = data;                                                                                                                \
-        if (block->size == BLOCK_CAP_##sz) {                                                                                                 \
-            cache.free_block[CacheSize##sz]                                                                                                  \
-                .block[cache.free_block[CacheSize##sz].len++] = block;                                                                       \
-        }                                                                                                                                    \
-        block->size -= 1;                                                                                                                    \
-        ptr->next = block->curr;                                                                                                             \
-        if (block->size == 0) {                                                                                                              \
-            for (uint32_t i = 0; i < cache.free_block[CacheSize##sz].len; i++) {                                                             \
-                if (cache.free_block[CacheSize##sz].block[i]->size == 0) {                                                                   \
-                    block_deinit(cache.free_block[CacheSize##sz].block[i]);                                                                  \
-                    cache.free_block[CacheSize##sz].block[i] = cache.free_block[CacheSize##sz].block[--cache.free_block[CacheSize##sz].len]; \
-                    break;                                                                                                                   \
-                }                                                                                                                            \
-            }                                                                                                                                \
-        }                                                                                                                                    \
+#define DEFINE_SLUB_FREE_SIZE(sz)                                                                                                              \
+    static void slub_free_##sz(void* data, Block* block) {                                                                                     \
+        Data##sz* ptr = (void*)(&((intptr_t*)data)[-1]);                                                                                       \
+        if (block->size == BLOCK_CAP_##sz) {                                                                                                   \
+            cache.free_block[CacheSize##sz]                                                                                                    \
+                .block[cache.free_block[CacheSize##sz].len++] = block;                                                                         \
+        }                                                                                                                                      \
+        block->size -= 1;                                                                                                                      \
+        ptr->next = block->curr;                                                                                                               \
+        block->curr = ptr;                                                                                                                     \
+        if (block->size == 0) {                                                                                                                \
+            for (uint32_t i = 0; i < cache.free_block[CacheSize##sz].len; i++) {                                                               \
+                if (cache.free_block[CacheSize##sz].block[i] == block) {                                                                       \
+                    block_deinit(cache.free_block[CacheSize##sz].block[i]);                                                                    \
+                    cache.free_block[CacheSize##sz].block[i] = cache.free_block[CacheSize##sz].block[cache.free_block[CacheSize##sz].len - 1]; \
+                    cache.free_block[CacheSize##sz].len -= 1;                                                                                  \
+                    break;                                                                                                                     \
+                }                                                                                                                              \
+            }                                                                                                                                  \
+        }                                                                                                                                      \
     }
 
 DEFINE_SLUB_FREE_SIZE(64)
@@ -247,6 +250,18 @@ void slub_free(void* ptr) {
     slub_free_size_funcs[block->type](ptr, block);
 }
 
+size_t slub_usable_size(void* ptr) {
+    if (ptr == NULL) {
+        return 0;
+    }
+    intptr_t size = ((intptr_t*)ptr)[-1];
+    if (size < 0) {
+        return -size;
+    }
+    Block* block = (void*)size;
+    return slub_translate_size(block->type);
+}
+
 void* slub_calloc(size_t nmemb, size_t size) {
     return slub_alloc(nmemb * size);
 }
@@ -259,19 +274,9 @@ void* slub_realloc(void* ptr, size_t size) {
         slub_free(ptr);
         return NULL;
     }
-    intptr_t ssize = ((intptr_t*)ptr)[-1];
-    size_t   old_size;
-    if (ssize < 0) {
-        old_size = -ssize;
-    } else {
-        Block* block = (void*)ssize;
-        old_size = slub_translate_size(block->type);
-    }
-    if (old_size >= size) {
-        return ptr;
-    }
-    char* res = slub_alloc(size);
-    char* old = ptr;
+    size_t old_size = slub_usable_size(ptr);
+    char*  res = slub_alloc(size);
+    char*  old = ptr;
     for (size_t i = 0; i < old_size; i++) {
         res[i] = old[i];
     }
@@ -321,5 +326,9 @@ void* realloc(void* ptr, size_t size) {
 
 void free(void* ptr) {
     slub_free(ptr);
+}
+
+size_t malloc_usable_size(void* ptr) {
+    return slub_usable_size(ptr);
 }
 #endif  // REPLACE_MALLOC
